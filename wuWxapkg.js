@@ -47,43 +47,52 @@ function saveFile(dir,buf,list){
 }
 function packDone(dir,cb,order){
 	console.log("Unpack done.");
+	let weappEvent=new wu.CntEvent,needDelete={};
+	weappEvent.encount(4);
+	weappEvent.add(()=>{
+		wu.addIO(()=>{
+			console.log("Split and make up done.");
+			if(!order.includes("d")){
+				console.log("Delete files...");
+				wu.addIO(()=>console.log("Deleted.\n\nFile done."));
+				for(let name in needDelete)if(needDelete[name]>=8)wu.del(name);
+			}
+			cb();
+		});
+	});
+	function doBack(deletable){
+		for(let key in deletable){
+			if(!needDelete[key])needDelete[key]=0;
+			needDelete[key]+=deletable[key];//all file have score bigger than 8 will be delete.
+		}
+		weappEvent.decount();
+	}
 	//This will be the only func running this time, so async is needless.
 	if(fs.existsSync(path.resolve(dir,"app-service.js"))){//weapp
 		console.log("Split app-service.js and make up configs & wxss & wxml & wxs...");
-		let weappEvent=new wu.CntEvent,needDelete={};
-		weappEvent.encount(4);
-		weappEvent.add(()=>{
-			wu.addIO(()=>{
-				console.log("Split and make up done.");
-				if(!order.includes("d")){
-					console.log("Delete files...");
-					wu.addIO(()=>console.log("Deleted.\n\nFile done."));
-					for(let name in needDelete)if(needDelete[name]>=8)wu.del(name);
-				}
-				cb();
-			});
-		});
-		function doBack(deletable){
-			for(let key in deletable){
-				if(!needDelete[key])needDelete[key]=0;
-				needDelete[key]+=deletable[key];//all file have score bigger than 8 will be delete.
-			}
-			weappEvent.decount();
-		}
 		wuCfg.doConfig(path.resolve(dir,"app-config.json"),doBack);
 		wuJs.splitJs(path.resolve(dir,"app-service.js"),doBack);
+		if(fs.existsSync(path.resolve(dir,"workers.js")))
+			wuJs.splitJs(path.resolve(dir,"workers.js"),doBack);
 		if(fs.existsSync(path.resolve(dir,"page-frame.html")))
 			wuMl.doFrame(path.resolve(dir,"page-frame.html"),doBack,order);
 		else if(fs.existsSync(path.resolve(dir,"app-wxss.js"))) {
 			wuMl.doFrame(path.resolve(dir,"app-wxss.js"),doBack,order);
-			needDelete[path.resolve(dir,"page-frame.js")]=8;
+			if(!needDelete[path.resolve(dir,"page-frame.js")])needDelete[path.resolve(dir,"page-frame.js")]=8;
 		} else throw Error("page-frame-like file is not found in the package by auto.");
 		wuSs.doWxss(dir,doBack);//Force it run at last, becuase lots of error occured in this part
 	}else if(fs.existsSync(path.resolve(dir,"game.js"))){//wegame
 		console.log("Split game.js and rewrite game.json...");
 		let gameCfg=path.resolve(dir,"app-config.json");
-		wu.get(gameCfg,cfg=>{
-			wu.save(path.resolve(dir,"game.json"),JSON.stringify(JSON.parse(cfg),null,4));
+		wu.get(gameCfg,cfgPlain=>{
+			let cfg=JSON.parse(cfgPlain);
+			if(cfg.subContext){
+				console.log("Found subContext, splitting it...")
+				delete cfg.subContext;
+				let contextPath=path.resolve(dir,"subContext.js");
+				wuJs.splitJs(contextPath,()=>wu.del(contextPath));
+			}
+			wu.save(path.resolve(dir,"game.json"),JSON.stringify(cfg,null,4));
 			wu.del(gameCfg);
 		});
 		wuJs.splitJs(path.resolve(dir,"game.js"),()=>{
@@ -92,18 +101,20 @@ function packDone(dir,cb,order){
 				cb();
 			});
 		});
-	}else throw Error("This Package is unrecognizable, please decrypted every type of file by hand.")
+	}else throw Error("This package is unrecognizable.\nMay be this package is a subPackage which should be unpacked with -s=<MainDir>.\nOtherwise, please decrypted every type of file by hand.")
 }
 function doFile(name,cb,order){
+	for(let ord of order)if(ord.startsWith("s="))global.subPack=ord.slice(3);
 	console.log("Unpack file "+name+"...");
 	let dir=path.resolve(name,"..",path.basename(name,".wxapkg"));
 	wu.get(name,buf=>{
 		let [infoListLength,dataLength]=header(buf.slice(0,14));
-		wu.addIO(packDone,dir,cb,order);
+		if(order.includes("o"))wu.addIO(console.log.bind(console),"Unpack done.");
+		else wu.addIO(packDone,dir,cb,order);
 		saveFile(dir,buf,genList(buf.slice(14,infoListLength+14)));
 	},{});
 }
 module.exports={doFile:doFile};
 if(require.main===module){
-    wu.commandExecute(doFile,"Unpack a wxapkg file.\n\n[-d] <files...>\n\n-d Do not delete transformed unpacked files.\n<files...> wxapkg files to unpack");
+    wu.commandExecute(doFile,"Unpack a wxapkg file.\n\n[-o] [-d] [-s=<Main Dir>] <files...>\n\n-d Do not delete transformed unpacked files.\n-o Do not execute any operation after unpack.\n-s=<Main Dir> Regard all packages provided as subPackages and\n              regard <Main Dir> as the directory of sources of the main package.\n<files...> wxapkg files to unpack");
 }

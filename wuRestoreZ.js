@@ -1,24 +1,53 @@
 const wu=require("./wuLib.js");
 const {VM}=require('vm2');
-function catchZ(name,cb){
-	wu.get(name,code=>{
-		let z=[],vm=new VM({sandbox:{
-			z:z,
-			debugInfo:[]
-		}});
-		code=code.slice(code.indexOf('(function(z){var a=11;function Z(ops){z.push(ops)}'),code.lastIndexOf("(z);__WXML_GLOBAL__.ops_set.$gwx=z;")+4);
-		vm.run(code);
-		cb(z);
-	});
+function catchZGroup(code,groupPreStr,cb){
+	const debugPre="(function(z){var a=11;function Z(ops,debugLine){";
+	let zArr={};
+	for(let preStr of groupPreStr){
+		let content=code.slice(code.indexOf(preStr)),z=[];
+		content=content.slice(content.indexOf("(function(z){var a=11;"));
+		content=content.slice(0,content.indexOf("})(__WXML_GLOBAL__.ops_cached.$gwx"))+"})(z);";
+		let vm=new VM({sandbox:{z:z,debugInfo:[]}});
+		vm.run(content);
+		if(content.startsWith(debugPre))for(let i=0;i<z.length;i++)z[i]=z[i][1];
+		zArr[preStr.match(/function gz\$gwx(\d*\_\d+)/)[1]]=z;
+	}
+	cb({"mul":zArr});
 }
-function restoreSingle(ops,withScope=false,par=''){
+function catchZ(code,cb){
+	let groupTest=code.match(/function gz\$gwx(\d*\_\d+)\(\)\{\s*if\( __WXML_GLOBAL__\.ops_cached\.\$gwx\d*\_\d+\)/g);
+	if(groupTest!==null)return catchZGroup(code,groupTest,cb);
+	let z=[],vm=new VM({sandbox:{
+		z:z,
+		debugInfo:[]
+	}});
+	let lastPtr=code.lastIndexOf("(z);__WXML_GLOBAL__.ops_set.$gwx=z;");
+	if(lastPtr==-1)lastPtr=code.lastIndexOf("(z);__WXML_GLOBAL__.ops_set.$gwx");
+	code=code.slice(code.indexOf('(function(z){var a=11;function Z(ops){z.push(ops)}'),lastPtr+4);
+	vm.run(code);
+	cb(z);
+}
+function restoreSingle(ops,withScope=false){
 	if(typeof ops=="undefined")return "";
 	function scope(value){
 		if(value.startsWith('{')&&value.endsWith('}'))return withScope?value:"{"+value+"}";
 		return withScope?value:"{{"+value+"}}";
 	}
-	function restoreNext(ops,w=withScope,p=par){
-		return restoreSingle(ops,w,p);
+	function enBrace(value,type='{'){
+		if(value.startsWith('{')||value.startsWith('[')||value.startsWith('(')||value.endsWith('}')||value.endsWith(']')||value.endsWith(')'))value=' '+value+' ';
+		switch(type){
+			case '{':
+			return '{'+value+'}';
+			case '[':
+			return '['+value+']';
+			case '(':
+			return '('+value+')';
+			default:
+			throw Error("Unknown brace type "+type);
+		}
+	}
+	function restoreNext(ops,w=withScope){
+		return restoreSingle(ops,w);
 	}
 	function jsoToWxon(obj){//convert JS Object to Wechat Object Notation(No quotes@key+str)
 		let ans="";
@@ -30,10 +59,10 @@ function restoreSingle(ops,withScope=false,par=''){
 			return obj.toString();
 		}else if(obj instanceof Array){
 			for(let i=0;i<obj.length;i++)ans+=','+jsoToWxon(obj[i]);
-			return '['+ans.slice(1)+']';
+			return enBrace(ans.slice(1),'[');
 		}else if(typeof obj=="object"){
 			for(let k in obj)ans+=","+k+":"+jsoToWxon(obj[k]);
-			return '{'+ans.slice(1)+'}';
+			return enBrace(ans.slice(1),'{');
 		}else if(typeof obj=="string"){
 			let parts=obj.split('"'),ret=[];
 			for(let part of parts){
@@ -43,10 +72,6 @@ function restoreSingle(ops,withScope=false,par=''){
 			}
 			return "'"+ret.join('"')+"'";
 		}else return JSON.stringify(obj);
-	}
-	function son(value,notObject=false){
-		if(/^[A-Za-z\_][A-Za-z\d\_]*$/.test(value)/*is a qualified id*/){return '.'+value}
-		else return '['+(notObject?value:jsoToWxon(value))+']';
 	}
 	let op=ops[0];
 	if(typeof op!="object"){
@@ -78,7 +103,7 @@ function restoreSingle(ops,withScope=false,par=''){
 				let ret=restoreNext(ops[i],true);
 				if(ops[i] instanceof Object&&typeof ops[i][0]=="object"&&ops[i][0][0]==2){
 					//Add brackets if we need
-					if(getPrior(op[1],ops.length)>getPrior(ops[i][0][1],ops[i].length))ret='('+ret+')';
+					if(getPrior(op[1],ops.length)>getPrior(ops[i][0][1],ops[i].length))ret=enBrace(ret,'(');;
 				}
 				return ret;
 			}
@@ -107,7 +132,7 @@ function restoreSingle(ops,withScope=false,par=''){
 		{
 			switch (ops.length) {
 			case 2:
-				ans='['+restoreNext(ops[1],true)+']';
+				ans=enBrace(restoreNext(ops[1],true),'[');
 				break;
 			case 1:
 				ans='[]';
@@ -118,35 +143,49 @@ function restoreSingle(ops,withScope=false,par=''){
 				//console.log(a,a.startsWith('[')&&a.endsWith(']'));
 				if(a.startsWith('[')&&a.endsWith(']')){
 					if(a!='[]'){
-						ans='['+a.slice(1,-1)+','+restoreNext(ops[2],true)+']';
+						ans=enBrace(a.slice(1,-1).trim()+','+restoreNext(ops[2],true),'[');
 						//console.log('-',a);
 					}else{
-						ans='['+restoreNext(ops[2],true)+']';
+						ans=enBrace(restoreNext(ops[2],true),'[');
 					}
 				}else{
-					ans='[...'+a+','+restoreNext(ops[2],true)+']';//may/must not support in fact
+					ans=enBrace('...'+a+','+restoreNext(ops[2],true),'[');//may/must not support in fact
 				}
 			}
 			}
 			break;
 		}
 		case 6://get value of an object
-			ans=restoreNext(ops[1],true)+son(restoreNext(ops[2],true),true);
+		{
+			let sonName=restoreNext(ops[2],true);
+			if(sonName._type==="var")
+				ans=restoreNext(ops[1],true)+enBrace(sonName,'[');
+			else{
+				let attach="";
+				if(/^[A-Za-z\_][A-Za-z\d\_]*$/.test(sonName)/*is a qualified id*/)
+					attach='.'+sonName;
+				else attach=enBrace(sonName,'[');
+				ans=restoreNext(ops[1],true)+attach;
+			}
 			break;
-		case 7://get value(may be value of one object)
+		}
+		case 7://get value of str
 		{
 			switch(ops[1][0]){
 			case 11:
-				ans=par;
+				ans=enBrace("__unTestedGetValue:"+enBrace(jsoToWxon(ops),'['),'{');
 				break;
 			case 3:
-				ans=par?(par+son(ops[1][1])):ops[1][1];
+				ans=new String(ops[1][1]);
+				ans._type="var";
 				break;
+			default:
+				throw Error("Unknown type to get value");
 			}
 			break;
 		}
 		case 8://first object
-			ans='{'+ops[1]+':'+restoreNext(ops[2],true)+'}';//ops[1] have only this way to define
+			ans=enBrace(ops[1]+':'+restoreNext(ops[2],true),'{');//ops[1] have only this way to define
 			break;
 		case 9://object
 		{
@@ -158,15 +197,12 @@ function restoreSingle(ops,withScope=false,par=''){
 			let a=restoreNext(ops[1],true);
 			let b=restoreNext(ops[2],true);
 			let xa=type(a),xb=type(b);
-			if(xa==2||xb==2)ans="{__unkownMerge:["+a+","+b+"]}";
+			if(xa==2||xb==2)ans=enBrace("__unkownMerge:"+enBrace(a+","+b,'['),'{');
 			else{
-				let l="",r="";
-				if(xa)l="{"+a;
-				else l=a.slice(0,-1);
-				if(xb)r=b+"}";
-				else r=b.slice(1);
+				if(!xa)a=a.slice(1,-1).trim();
+				if(!xb)b=b.slice(1,-1).trim();
 				//console.log(l,r);
-				ans=l+','+r;
+				ans=enBrace(a+','+b,'{');
 			}
 			break;
 		}
@@ -177,21 +213,33 @@ function restoreSingle(ops,withScope=false,par=''){
 		{
 			let arr=restoreNext(ops[2],true);
 			if(arr.startsWith('[')&&arr.endsWith(']'))
-				ans=restoreNext(ops[1],true)+'('+arr.slice(1,-1)+')';
-			else ans=restoreNext(ops[1],true)+'.apply(null,'+arr+')';
+				ans=restoreNext(ops[1],true)+enBrace(arr.slice(1,-1).trim(),'(');
+			else ans=restoreNext(ops[1],true)+'.apply'+enBrace('null,'+arr,'(');
 			break;
 		}
 		default:
-			ans="{__unkownSpecific:"+jsoToWxon(ops)+"}";
+			ans=enBrace("__unkownSpecific:"+jsoToWxon(ops),'{');
 		}
 		return scope(ans);
 	}
 }
+function restoreGroup(z){
+	let ans=[];
+	for(let g in z.mul){
+		let singleAns=[];
+		for(let e of z.mul[g])singleAns.push(restoreSingle(e,false));
+		ans[g]=singleAns;
+	}
+	let ret=[];//Keep a null array for remaining global Z array.
+	ret.mul=ans;
+	return ret;
+}
 function restoreAll(z){
+	if(z.mul)return restoreGroup(z);
 	let ans=[];
 	for(let e of z)ans.push(restoreSingle(e,false));
 	return ans;
 }
-module.exports={getZ(name,cb){
-	catchZ(name,z=>cb(restoreAll(z)));
+module.exports={getZ(code,cb){
+	catchZ(code,z=>cb(restoreAll(z)));
 }};

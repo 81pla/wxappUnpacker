@@ -1,6 +1,7 @@
 const wu=require("./wuLib.js");
 const path=require("path");
 const UglifyJS=require("uglify-es");
+const {js_beautify}=require("js-beautify");
 const {VM}=require('vm2');
 function jsBeautify(code){
 	return UglifyJS.minify(code,{mangle:false,compress:false,output:{beautify:true,comments:true}}).code;
@@ -8,6 +9,7 @@ function jsBeautify(code){
 function splitJs(name,cb){
 	let dir=path.dirname(name);
 	wu.get(name,code=>{
+		let needDelList={};
 		let vm=new VM({sandbox:{
 			require(){},
 			define(name,func){
@@ -21,15 +23,17 @@ function splitJs(name,cb){
 					console.log("Fail to delete 'use strict' in \""+name+"\".");
 					res=jsBeautify(bcode);
 				}
+				needDelList[path.resolve(dir,name)]=-8;
 				wu.save(path.resolve(dir,name),jsBeautify(res));
 			}
 		}});
 		vm.run(code.slice(code.indexOf("define(")));
 		console.log("Splitting \""+name+"\" done.");
-		cb({[name]:8});
+		if(!needDelList[name])needDelList[name]=8;
+		cb(needDelList);
 	});
 }
-module.exports={jsBeautify:jsBeautify,splitJs:splitJs};
+module.exports={jsBeautify:jsBeautify,wxsBeautify:js_beautify,splitJs:splitJs};
 if(require.main===module){
     wu.commandExecute(splitJs,"Split and beautify weapp js file.\n\n<files...>\n\n<files...> js files to split and beautify.");
 }

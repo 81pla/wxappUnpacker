@@ -9,29 +9,29 @@ typedef unsigned char uint8;
 typedef unsigned int uint32;//Notice: uint32 use BIG-ENDIAN, not Little.
 
 struct wxHeader {
-	uint8 firstMark;// one of magic number, which is equal to 0xbe
-	uint32 unknownInfo;// this info was always set to zero. maybe it's the verison of file?
-	uint32 infoListLength;// the length of wxFileInfoList
-	uint32 dataLength;// the length of dataBuf
-	uint8 lastMark;// another magic number, which is equal to 0xed
+    uint8 firstMark;// one of magic number, which is equal to 0xbe
+    uint32 unknownInfo;// this info was always set to zero. maybe it's the verison of file?
+    uint32 infoListLength;// the length of wxFileInfoList
+    uint32 dataLength;// the length of dataBuf
+    uint8 lastMark;// another magic number, which is equal to 0xed
 };
 
-struct wxFileInfo {// illustrate one file in wxapkg pack 
-	uint32 nameLen;// the length of filename
-	char name[nameLen];// filename, use UTF-8 encoding (translating it to GBK is required in Win)
-	uint32 fileOff;// the offset of this file (0 is pointing to the begining of this file[struct wxapkgFile])
-	uint32 fileLen;// the length of this file
+struct wxFileInfo {// illustrate one file in wxapkg pack
+    uint32 nameLen;// the length of filename
+    char name[nameLen];// filename, use UTF-8 encoding (translating it to GBK is required in Win)
+    uint32 fileOff;// the offset of this file (0 is pointing to the begining of this file[struct wxapkgFile])
+    uint32 fileLen;// the length of this file
 };
 
 struct wxFileInfoList {
-	uint32 fileCount;// The count of file
-	wxFileInfo fileInfos[fileCount];
+    uint32 fileCount;// The count of file
+    wxFileInfo fileInfos[fileCount];
 };
 
 struct wxapkgFile {
-	wxHeader header;
-	wxFileInfoList fileInfoList;
-	uint8 dataBuf[dataLength];
+    wxHeader header;
+    wxFileInfoList fileInfoList;
+    uint8 dataBuf[dataLength];
 };
 ```
 
@@ -153,7 +153,7 @@ Z([[8],'text',[[4],[[5],[[5],[[5],[1,1]],[1,2]],[1,3]]]]);
 })(z);
 ```
 
-其实可以将`[[id],xxx,yyy]`看作由指令与操作数的组合。注意每个这样的数组作为指令所产生的结果会作为外层数组中的操作数，这样可以构成一个树形结构。通过将递归计算的过程改成拼接源代码字符串的过程，我们可以还原出每个数组所对应的实际内容。下文中，将这个数组中记为`z`。
+其实可以将`[[id],xxx,yyy]`看作由指令与操作数的组合。注意每个这样的数组作为指令所产生的结果会作为外层数组中的操作数，这样可以构成一个树形结构。通过将递归计算的过程改成拼接源代码字符串的过程，我们可以还原出每个数组所对应的实际内容（值得注意的是，由于微信的`Token`解析程序采用了贪心算法，我们必须将连续的`}`翻译为`} }`而非`}}`，否则会被误认为是`Mustache`的结束符）。下文中，将这个数组中记为`z`。
 
 然后，对于 wxml 文件的结构，可以将每种可能的 js 语句拆分成 指令 来分析，这里可以用到 [Esprima](https://github.com/jquery/esprima) 这样的 js 的 AST 来简化识别操作，可以很容易分析出以下内容，例如:
 
@@ -295,3 +295,40 @@ _ic(x[{from}],e_,x[{to}],..,..,..,..);
 ```
 
 这样，我们完成了几乎所有 wxapkg包 内容的还原。
+
+### 对`z`数组优化后的支持方法
+
+`wcc-v0.5vv_20180626_syb_zp`后通过只加载`z`数组中需要的部分来提高小程序运行速度，这也会导致仅考虑到上述内容的解包程序解包失败，这一更新的主要内容如下：
+
+- 增加z数组的函数:`_rz` `_2z` `_mz` `_1z` `_oz`
+- 在每个函数头部增加了`var z=gz$gwx_{$id}()`，来标识使用的z数组id
+- 原有的z数组不再存在
+- z数组已以下固定格式出现：
+
+```javascript
+function gz$gwx_{$id}(){
+if( __WXML_GLOBAL__.ops_cached.$gwx_{$id})return __WXML_GLOBAL__.ops_cached.$gwx_{$id}
+__WXML_GLOBAL__.ops_cached.$gwx_{$id}=[];
+(function(z){var a=11;function Z(ops){z.push(ops)}
+
+//... (Z({$content}))
+
+})(__WXML_GLOBAL__.ops_cached.$gwx_{$id});return __WXML_GLOBAL__.ops_cached.$gwx_{$id}
+}
+```
+
+对于上述变更，将获取`z`数组处修改并添加对`_rz` `_2z` `_mz` `_1z` `_oz`的支持即可。
+
+需要注意的是开发版的`z`数组转为如下结构：
+
+```javascript
+(function(z){var a=11;function Z(ops,debugLine){z.push(['11182016',ops,debugLine])}
+//...
+})//...
+```
+
+探测到为开发版后应将获取到的`z`数组仅保留数组中的第二项。
+
+以及含分包的子包采用 `gz$gwx{$subPackageId}_{$id}` 命名，其中`{$subPackageId}`是一个数字。
+
+另外还需要注意，`template`的 `var z=gz$gwx_{$id}` 在`try`块外。

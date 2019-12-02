@@ -5,6 +5,9 @@ const {VM}=require('vm2');
 const cssbeautify=require('cssbeautify');
 const csstree=require('css-tree');
 function doWxss(dir,cb){
+	function GwxCfg(){}
+	GwxCfg.prototype={$gwx(){}};
+	for(let i=0;i<300;i++)GwxCfg.prototype["$gwx"+i]=GwxCfg.prototype.$gwx;
 	let runList={},pureData={},result={},actualPure={},importCnt={},frameName="",onlyTest=true,blockCss=[];//custom block css file which won't be imported by others.(no extension name)
 	function cssRebuild(data){//need to bind this as {cssFile:__name__} before call
 		let cssFile;
@@ -62,7 +65,7 @@ function doWxss(dir,cb){
 	}
 	function runVM(name,code){
 		let wxAppCode={},handle={cssFile:name};
-		let vm=new VM({sandbox:{$gwx(){},__wxAppCode__:wxAppCode,setCssToHead:cssRebuild.bind(handle)}});
+		let vm=new VM({sandbox:Object.assign(new GwxCfg(),{__wxAppCode__:wxAppCode,setCssToHead:cssRebuild.bind(handle)})});
 		vm.run(code);
 		for(let name in wxAppCode)if(name.endsWith(".wxss")){
 			handle.cssFile=path.resolve(frameName,"..",name);
@@ -94,19 +97,47 @@ function doWxss(dir,cb){
 				else if(node.name=="body")node.name="page";
 			}
 			if(node.children){
+				const removeType=["webkit","moz","ms","o"];
 				let list={};
 				node.children.each((son,item)=>{
 					if(son.type=="Declaration"){
-						if(list["-webkit-"+son.property]){
-							node.children.remove(list["-webkit-"+son.property]);
-							delete list["-webkit-"+son.property];
-						}else if(list[son.property]){
-							let thisValue=son.value.children.head&&son.value.children.head.data.name;
-							if(list[son.property].data.value.children.head&&list[son.property].data.value.children.head.data.name=="-webkit-"+thisValue)node.children.remove(list[son.property]);
-						}
-						list[son.property]=item;
+						if(list[son.property]){
+							let a=item,b=list[son.property],x=son,y=b.data,ans=null;
+							if(x.value.type=='Raw'&&x.value.value.startsWith("progid:DXImageTransform")){
+								node.children.remove(a);
+								ans=b;
+							}else if(y.value.type=='Raw'&&y.value.value.startsWith("progid:DXImageTransform")){
+								node.children.remove(b);
+								ans=a;
+							}else{
+								let xValue=x.value.children&&x.value.children.head&&x.value.children.head.data.name,yValue=y.value.children&&y.value.children.head&&y.value.children.head.data.name;
+								if(xValue&&yValue)for(let type of removeType)if(xValue==`-${type}-${yValue}`){
+									node.children.remove(a);
+									ans=b;
+									break;
+								}else if(yValue==`-${type}-${xValue}`){
+									node.children.remove(b);
+									ans=a;
+									break;
+								}else{
+									let mValue=`-${type}-`;
+									if(xValue.startsWith(mValue))xValue=xValue.slice(mValue.length);
+									if(yValue.startsWith(mValue))yValue=yValue.slice(mValue.length);
+								}
+								if(ans===null)ans=b;
+							}
+							list[son.property]=ans;
+						}else list[son.property]=item;
 					}
 				});
+				for(let name in list)if(!name.startsWith('-'))
+					for(let type of removeType){
+						let fullName=`-${type}-${name}`;
+						if(list[fullName]){
+							node.children.remove(list[fullName]);
+							delete list[fullName];
+						}
+					}
 			}
 		});
 		return cssbeautify(csstree.generate(ast),{indent:'    ',autosemicolon:true});
@@ -117,9 +148,11 @@ function doWxss(dir,cb){
 			frameFile=path.resolve(dir,"page-frame.html");
 		else if(fs.existsSync(path.resolve(dir,"app-wxss.js")))
 			frameFile=path.resolve(dir,"app-wxss.js");
+		else if(fs.existsSync(path.resolve(dir,"page-frame.js")))
+			frameFile=path.resolve(dir,"page-frame.js");
 		else throw Error("page-frame-like file is not found in the package by auto.");
 		wu.get(frameFile,code=>{
-			code=code.slice(code.indexOf('var setCssToHead = function(file, _xcInvalid) {'));
+			code=code.slice(code.indexOf('var setCssToHead = function(file, _xcInvalid'));
 			code=code.slice(code.indexOf('\nvar _C= ')+1);
 			let oriCode=code;
 			code=code.slice(0,code.indexOf('\n'));
